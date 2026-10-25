@@ -1,0 +1,511 @@
+
+<!DOCTYPE html>
+<html lang="ka">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>კვესოს თავგადასავალი 5.1</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#172033;color:white;font-family:Arial,sans-serif;text-align:center}
+h1{margin:12px 0;color:#ffe66d}
+#hud{display:flex;justify-content:center;gap:8px;flex-wrap:wrap;padding:8px}
+.stat{background:#283650;padding:8px 11px;border-radius:12px}
+button{border:0;border-radius:10px;padding:10px 14px;margin:4px;background:#ffdc55;color:#252525;font-weight:bold;cursor:pointer}
+button:hover{filter:brightness(1.1)}
+canvas{display:block;width:min(96vw,960px);height:auto;margin:8px auto;background:#8cddff;border:4px solid white;border-radius:12px}
+#message{min-height:28px;color:#ffe66d;font-weight:bold}
+#shop{display:none;background:#283650;padding:12px;margin:8px auto;max-width:600px;border-radius:12px}
+.small{font-size:13px;color:#cbd5e1}
+</style>
+</head>
+<body>
+<h1>🦖 კვესოს თავგადასავალი 5.1</h1>
+
+<div id="hud">
+ <div class="stat">⭐ ქულა: <b id="score">0</b></div>
+ <div class="stat">🏆 რეკორდი: <b id="record">0</b></div>
+ <div class="stat">💰 ქოინები: <b id="coins">0</b></div>
+ <div class="stat">❤️ სიცოცხლე: <b id="lives">3</b></div>
+ <div class="stat">⚡ სიჩქარე: <b id="speed">1.0</b></div>
+</div>
+
+<canvas id="game" width="960" height="420"></canvas>
+<div id="message">დააჭირე SPACE-ს ან ეკრანს ხტომისთვის!</div>
+
+<div>
+ <button onclick="restart()">🔄 თავიდან დაწყება</button>
+ <button onclick="toggleShop()">🛒 მაღაზია</button>
+ <button onclick="toggleMusic()" id="musicBtn">🎵 მუსიკა: ჩართული</button>
+</div>
+
+<div id="shop">
+ <h2>🛒 კვესოს მაღაზია</h2>
+ <p>💰 ბალანსი: <b id="shopCoins">0</b></p>
+ <button onclick="buyLife()">❤️ სიცოცხლე — 15 ქოინი</button>
+ <button onclick="buySkin('green',0)">🟢 მწვანე — უფასო</button>
+ <button onclick="buySkin('blue',20)">🔵 ლურჯი — 20 ქოინი</button>
+ <button onclick="buySkin('fire',35)">🔥 ცეცხლის — 35 ქოინი</button>
+ <button onclick="buySkin('gold',60)">🌟 ოქროს — 60 ქოინი</button>
+ <button onclick="buySkin('purple',45)">🟣 იასამნისფერი — 45 ქოინი</button>
+ <p class="small">ქოინები, სქინები და რეკორდი ავტომატურად ინახება.</p>
+</div>
+
+<p class="small">SPACE / ↑ — ხტომა · R — თავიდან დაწყება · S — მაღაზია</p>
+
+<script>
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+const W=canvas.width,H=canvas.height,GROUND=340;
+
+// შენახული მონაცემები
+function loadNumber(key,fallback=0){
+ const v=localStorage.getItem(key);
+ return v===null?fallback:(Number(v)||0);
+}
+function loadJSON(key,fallback){
+ try{return JSON.parse(localStorage.getItem(key))??fallback}
+ catch(e){return fallback}
+}
+
+let totalCoins=loadNumber("kvesoCoins",0);
+let record=loadNumber("kvesoRecord",0);
+let owned=loadJSON("kvesoOwned",["green"]);
+let skin=localStorage.getItem("kvesoSkin")||"green";
+
+if(!owned.includes("green"))owned.push("green");
+if(!owned.includes(skin))skin="green";
+
+function saveData(){
+ localStorage.setItem("kvesoCoins",String(totalCoins));
+ localStorage.setItem("kvesoOwned",JSON.stringify(owned));
+ localStorage.setItem("kvesoSkin",skin);
+}
+function saveRecord(){
+ if(Math.floor(score)>record){
+  record=Math.floor(score);
+  localStorage.setItem("kvesoRecord",String(record));
+ }
+ document.getElementById("record").textContent=record;
+}
+
+let score=0,lives=3,speed=1,frame=0,gameOver=false;
+let obstacles=[],coins=[],islands=[],bullets=[];
+let boss=null,nextBoss=500;
+let coinTimer=35,obstacleTimer=75,islandTimer=160;
+let lastTime=0,accum=0;
+let musicOn=true,melodyTimer=0,audioCtx=null;
+
+const skins={
+ green:"#36b84a",blue:"#2695ff",fire:"#ff702d",
+ gold:"#ffdb35",purple:"#ae63ff"
+};
+const dino={x:110,y:GROUND-48,w:44,h:48,vy:0,onGround:true,invincible:0};
+const gravity=.65,jumpPower=-13;
+
+function hud(){
+ document.getElementById("score").textContent=Math.floor(score);
+ document.getElementById("coins").textContent=totalCoins;
+ document.getElementById("lives").textContent=lives;
+ document.getElementById("speed").textContent=speed.toFixed(1);
+ document.getElementById("shopCoins").textContent=totalCoins;
+ saveRecord();
+ saveData();
+}
+function say(t){document.getElementById("message").textContent=t}
+
+function jump(){
+ if(gameOver){restart();return}
+ if(dino.onGround){
+  dino.vy=jumpPower;
+  dino.onGround=false;
+  sound(330,.06);
+ }
+}
+document.addEventListener("keydown",e=>{
+ if(["Space","ArrowUp","KeyW"].includes(e.code)){
+  e.preventDefault();jump();
+ }
+ if(e.code==="KeyR")restart();
+ if(e.code==="KeyS")toggleShop();
+});
+canvas.addEventListener("pointerdown",jump);
+
+function restart(){
+ // ქოინები, სქინები და რეკორდი არ ნულდება
+ score=0;lives=3;speed=1;frame=0;gameOver=false;
+ obstacles=[];coins=[];islands=[];bullets=[];
+ boss=null;nextBoss=500;
+ coinTimer=35;obstacleTimer=75;islandTimer=160;
+ dino.y=GROUND-dino.h;dino.vy=0;
+ dino.onGround=true;dino.invincible=0;
+ say("წარმატებები, კვესო! 💚");
+ hud();
+}
+
+function toggleShop(){
+ const el=document.getElementById("shop");
+ el.style.display=el.style.display==="block"?"none":"block";
+}
+function buyLife(){
+ if(totalCoins<15){say("სიცოცხლისთვის 15 ქოინი გჭირდება!");return}
+ if(lives>=5){say("უკვე მაქსიმალური სიცოცხლე გაქვს!");return}
+ totalCoins-=15;lives++;hud();say("❤️ სიცოცხლე იყიდე!");
+}
+function buySkin(name,cost){
+ if(owned.includes(name)){
+  skin=name;saveData();hud();say("სქინი შეიცვალა!");return;
+ }
+ if(totalCoins<cost){say("ქოინები არ გყოფნის!");return}
+ totalCoins-=cost;owned.push(name);skin=name;
+ saveData();hud();say("ახალი სქინი შეიძინე! 🎉");
+}
+
+function toggleMusic(){
+ musicOn=!musicOn;
+ document.getElementById("musicBtn").textContent=
+  "🎵 მუსიკა: "+(musicOn?"ჩართული":"გამორთული");
+ if(musicOn)startAudio();
+}
+function startAudio(){
+ if(!musicOn)return;
+ try{
+  if(!audioCtx)audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+  if(audioCtx.state==="suspended")audioCtx.resume();
+ }catch(e){}
+}
+function sound(freq=440,duration=.08){
+ if(!musicOn)return;
+ try{
+  startAudio();if(!audioCtx)return;
+  const o=audioCtx.createOscillator(),g=audioCtx.createGain();
+  o.type="sine";o.frequency.value=freq;g.gain.value=.045;
+  o.connect(g);g.connect(audioCtx.destination);
+  o.start();
+  g.gain.exponentialRampToValueAtTime(.001,audioCtx.currentTime+duration);
+  o.stop(audioCtx.currentTime+duration);
+ }catch(e){}
+}
+const notes=[392,440,523,440,349,392,440,330];
+function melody(){
+ if(!musicOn||!audioCtx)return;
+ if(frame-melodyTimer>25){
+  melodyTimer=frame;
+  sound(notes[Math.floor(frame/25)%notes.length],.12);
+ }
+}
+
+function rand(a,b){return a+Math.random()*(b-a)}
+function spawnObstacle(){
+ if(Math.random()<.24){
+  obstacles.push({type:"pit",x:W+10,w:rand(72,112)});
+ }else{
+  const tall=Math.random()<.25;
+  obstacles.push({type:"cactus",x:W+10,w:tall?29:22,h:tall?66:43});
+ }
+}
+function spawnCoin(){
+ coins.push({x:W+10,y:rand(190,GROUND-65),r:10,
+  gold:Math.random()<.18,taken:false});
+}
+function spawnIsland(){
+ islands.push({
+  x:W+15,y:GROUND-rand(85,150),
+  w:rand(120,190),h:14,
+  kind:Math.random()<.55?"island":"ramp"
+ });
+}
+function spawnBoss(){
+ boss={x:W+20,y:GROUND-92,w:78,h:92,hp:3,maxHp:3,shoot:90};
+ say("👹 ბოსი მოვიდა! თავზე გადახტი!");
+ sound(180,.3);
+}
+function rects(a,b){
+ return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y;
+}
+function loseLife(){
+ if(dino.invincible>0||gameOver)return;
+ lives--;dino.invincible=95;sound(110,.2);
+ if(lives<=0){
+  gameOver=true;
+  say("თამაში დასრულდა! რეკორდი: "+record);
+ }else say("ფრთხილად! ❤️ დარჩა: "+lives);
+ hud();
+}
+function addPoints(n){
+ score+=n;
+ const newSpeed=1+Math.floor(score/100)*.1;
+ if(newSpeed!==speed){
+  speed=newSpeed;
+  say("⚡ სიჩქარე გაიზარდა: "+speed.toFixed(1));
+ }
+ if(score>=nextBoss&&!boss&&!gameOver){
+  spawnBoss();nextBoss+=500;
+ }
+ saveRecord();
+}
+
+function collectCoins(){
+ for(const c of coins){
+  if(c.taken)continue;
+  const dx=dino.x+dino.w/2-(c.x+c.r);
+  const dy=dino.y+dino.h/2-(c.y+c.r);
+  if(Math.hypot(dx,dy)<31){
+   c.taken=true;
+   totalCoins+=c.gold?5:1;
+   addPoints(c.gold?10:2);
+   say(c.gold?"🌟 ოქროს ქოინი! +5 ქოინი, +10 ქულა":"💰 +1 ქოინი!");
+   sound(c.gold?880:660,.1);hud();
+  }
+ }
+}
+
+function update(){
+ if(gameOver)return;
+ frame++;
+ addPoints(.09*speed);
+ if(dino.invincible>0)dino.invincible--;
+
+ dino.vy+=gravity;
+ dino.y+=dino.vy;
+ dino.onGround=false;
+ let supported=false;
+
+ // კუნძულები და აღმართები
+ for(const p of islands){
+  p.x-=4*speed;
+  if(dino.vy>=0&&dino.x+dino.w>p.x&&dino.x<p.x+p.w){
+   const feet=dino.y+dino.h,prevFeet=feet-dino.vy;
+   let top=p.y;
+   if(p.kind==="ramp"){
+    const t=Math.max(0,Math.min(1,(dino.x+dino.w/2-p.x)/p.w));
+    top=p.y+24*(1-t);
+   }
+   if(prevFeet<=top+2&&feet>=top&&dino.y<top+8){
+    dino.y=top-dino.h;dino.vy=0;
+    dino.onGround=true;supported=true;
+   }
+  }
+ }
+ islands=islands.filter(p=>p.x+p.w>-30);
+
+ for(const o of obstacles)o.x-=4*speed;
+ const overPit=obstacles.some(o=>o.type==="pit"&&
+  dino.x+dino.w>o.x+3&&dino.x<o.x+o.w-3);
+
+ if(!supported&&!overPit&&dino.y+dino.h>=GROUND){
+  dino.y=GROUND-dino.h;dino.vy=0;dino.onGround=true;
+ }
+ if(dino.y>H+30){
+  loseLife();dino.y=GROUND-dino.h;dino.vy=0;dino.onGround=true;
+ }
+
+ obstacleTimer--;
+ if(obstacleTimer<=0){
+  spawnObstacle();obstacleTimer=rand(65,105)/Math.min(speed,1.8);
+ }
+ coinTimer--;
+ if(coinTimer<=0){spawnCoin();coinTimer=rand(42,75)}
+ islandTimer--;
+ if(islandTimer<=0){spawnIsland();islandTimer=rand(230,330)}
+
+ obstacles=obstacles.filter(o=>o.x+(o.w||0)>-20);
+ coins=coins.filter(c=>c.x>-30&&!c.taken);
+ for(const c of coins)c.x-=4*speed;
+
+ for(const o of obstacles){
+  if(o.type!=="cactus")continue;
+  const hitbox={x:o.x+3,y:GROUND-o.h,w:o.w-6,h:o.h};
+  const db={x:dino.x+7,y:dino.y+5,w:dino.w-14,h:dino.h-8};
+  if(rects(db,hitbox)){loseLife();break}
+ }
+ collectCoins();
+
+ if(boss){
+  boss.x-=1.5*speed;
+  if(boss.x<650)boss.x=650;
+  boss.shoot--;
+  if(boss.shoot<=0){
+   bullets.push({x:boss.x,y:boss.y+35,r:9,vx:-5.5});
+   boss.shoot=rand(75,110);sound(230,.08);
+  }
+  const db={x:dino.x+6,y:dino.y+5,w:dino.w-12,h:dino.h-7};
+  const bb={x:boss.x,y:boss.y,w:boss.w,h:boss.h};
+  if(rects(db,bb)){
+   if(dino.vy>1&&dino.y+dino.h<boss.y+42){
+    boss.hp--;dino.vy=-9;addPoints(25);sound(700,.15);
+    if(boss.hp<=0){
+     totalCoins+=20;addPoints(100);boss=null;
+     say("🏆 ბოსი დაამარცხე! +20 ქოინი!");hud();
+    }
+   }else loseLife();
+  }
+  if(boss&&boss.x<-boss.w)boss=null;
+ }
+ for(const b of bullets){
+  b.x+=b.vx;
+  if(Math.hypot(dino.x+dino.w/2-b.x,dino.y+dino.h/2-b.y)<24){
+   b.x=-100;loseLife();
+  }
+ }
+ bullets=bullets.filter(b=>b.x>-20);
+ hud();melody();
+}
+
+function drawCloud(x,y,s=1){
+ ctx.fillStyle="rgba(255,255,255,.9)";
+ ctx.beginPath();
+ ctx.arc(x,y,17*s,0,Math.PI*2);
+ ctx.arc(x+20*s,y-9*s,22*s,0,Math.PI*2);
+ ctx.arc(x+43*s,y,17*s,0,Math.PI*2);
+ ctx.fill();
+}
+function drawBackground(){
+ const sky=ctx.createLinearGradient(0,0,0,H);
+ sky.addColorStop(0,"#69c8ff");sky.addColorStop(1,"#dcf7ff");
+ ctx.fillStyle=sky;ctx.fillRect(0,0,W,H);
+ drawCloud(90+(frame*.15%1100)-80,75,.9);
+ drawCloud(430-(frame*.1%500),120,.7);
+ drawCloud(770-(frame*.13%900),58,1);
+
+ ctx.fillStyle="#8bd879";
+ ctx.beginPath();ctx.moveTo(0,GROUND);
+ for(let x=0;x<=W;x+=8){
+  ctx.lineTo(x,GROUND-35-Math.sin((x+frame*.35)/105)*24-Math.sin(x/55)*8);
+ }
+ ctx.lineTo(W,GROUND);ctx.fill();
+
+ ctx.fillStyle="#45b94c";ctx.fillRect(0,GROUND,W,H-GROUND);
+ ctx.fillStyle="#27963a";
+ for(let x=0;x<W;x+=18){
+  const xx=(x-(frame*4*speed)%18+18)%W;
+  ctx.fillRect(xx,GROUND+9,9,3);
+ }
+}
+function drawGroundAndPits(){
+ const pits=obstacles.filter(o=>o.type==="pit").sort((a,b)=>a.x-b.x);
+ let start=0;
+ ctx.fillStyle="#42b847";
+ for(const p of pits){
+  if(p.x>start)ctx.fillRect(start,GROUND,p.x-start,H-GROUND);
+  start=Math.max(start,p.x+p.w);
+ }
+ if(start<W)ctx.fillRect(start,GROUND,W-start,H-GROUND);
+ for(const p of pits){
+  ctx.fillStyle="#52362d";ctx.fillRect(p.x,GROUND,p.w,H-GROUND);
+  ctx.fillStyle="#2e2525";ctx.fillRect(p.x+8,GROUND+8,p.w-16,H-GROUND);
+  ctx.fillStyle="#42b847";
+  ctx.fillRect(p.x-4,GROUND-3,8,7);
+  ctx.fillRect(p.x+p.w-4,GROUND-3,8,7);
+ }
+}
+function drawIslands(){
+ for(const p of islands){
+  ctx.fillStyle="#328c43";
+  ctx.beginPath();
+  if(p.kind==="ramp"){
+   ctx.moveTo(p.x,p.y+24);ctx.lineTo(p.x+p.w,p.y);
+   ctx.lineTo(p.x+p.w,p.y+14);ctx.lineTo(p.x,p.y+38);
+   ctx.closePath();
+  }else ctx.roundRect(p.x,p.y,p.w,p.h,7);
+  ctx.fill();
+  ctx.fillStyle="#8a5837";
+  if(p.kind==="ramp"){
+   ctx.beginPath();
+   ctx.moveTo(p.x,p.y+38);ctx.lineTo(p.x+p.w,p.y+14);
+   ctx.lineTo(p.x+p.w,p.y+25);ctx.lineTo(p.x,p.y+49);
+   ctx.closePath();ctx.fill();
+  }else ctx.fillRect(p.x,p.y+p.h,p.w,10);
+  ctx.fillStyle="#fff3a1";
+  ctx.fillRect(p.x+18,p.y+3,4,4);
+  ctx.fillRect(p.x+p.w-25,p.y+4,4,4);
+ }
+}
+function drawDino(){
+ if(dino.invincible>0&&Math.floor(frame/5)%2===0)return;
+ const x=dino.x,y=dino.y;
+ ctx.fillStyle=skins[skin]||skins.green;
+ ctx.beginPath();
+ ctx.moveTo(x+6,y+29);ctx.lineTo(x-8,y+22);
+ ctx.lineTo(x+5,y+39);ctx.fill();
+ ctx.fillRect(x+5,y+18,30,27);
+ ctx.fillRect(x+20,y+2,23,24);
+ ctx.fillRect(x+9,y+40,8,8);ctx.fillRect(x+27,y+40,8,8);
+ ctx.fillRect(x+26,y+26,12,5);
+ ctx.fillStyle="#fff";ctx.fillRect(x+34,y+8,7,7);
+ ctx.fillStyle="#151515";ctx.fillRect(x+38,y+10,3,4);
+ ctx.fillRect(x+28,y+18,8,3);
+ ctx.fillStyle=skin==="fire"?"#ffca35":skin==="gold"?"#fff4a3":"#1b7638";
+ ctx.beginPath();
+ ctx.moveTo(x+21,y+3);ctx.lineTo(x+26,y-5);
+ ctx.lineTo(x+30,y+3);ctx.lineTo(x+35,y-3);
+ ctx.lineTo(x+38,y+5);ctx.fill();
+}
+function draw(){
+ drawBackground();drawGroundAndPits();drawIslands();
+
+ for(const o of obstacles){
+  if(o.type==="cactus"){
+   ctx.fillStyle="#17873c";
+   ctx.fillRect(o.x+6,GROUND-o.h,o.w-12,o.h);
+   ctx.fillRect(o.x,GROUND-o.h+14,8,17);
+   ctx.fillRect(o.x+o.w-8,GROUND-o.h+22,8,17);
+   ctx.fillStyle="#70d36b";
+   ctx.fillRect(o.x+8,GROUND-o.h+6,3,o.h-12);
+  }
+ }
+ for(const c of coins){
+  ctx.beginPath();ctx.arc(c.x+c.r,c.y+c.r,c.r,0,Math.PI*2);
+  ctx.fillStyle=c.gold?"#ff9f1c":"#ffd83d";ctx.fill();
+  ctx.strokeStyle=c.gold?"#fff2a8":"#b77b00";ctx.lineWidth=3;ctx.stroke();
+  ctx.fillStyle="#fff7bf";ctx.fillRect(c.x+c.r-2,c.y+4,4,9);
+ }
+ if(boss){
+  ctx.fillStyle="#7b293b";ctx.fillRect(boss.x,boss.y,boss.w,boss.h);
+  ctx.fillStyle="#e44e63";ctx.fillRect(boss.x+10,boss.y-10,boss.w-20,16);
+  ctx.fillStyle="#fff";
+  ctx.fillRect(boss.x+14,boss.y+19,16,16);
+  ctx.fillRect(boss.x+49,boss.y+19,16,16);
+  ctx.fillStyle="#e22";
+  ctx.fillRect(boss.x+20,boss.y+24,8,8);
+  ctx.fillRect(boss.x+54,boss.y+24,8,8);
+  ctx.fillStyle="#111";ctx.fillRect(boss.x+28,boss.y+59,30,9);
+  ctx.fillStyle="#222";ctx.fillRect(boss.x,boss.y-24,boss.w,8);
+  ctx.fillStyle="#ff4040";
+  ctx.fillRect(boss.x,boss.y-24,boss.w*(boss.hp/boss.maxHp),8);
+  ctx.fillStyle="#fff";ctx.font="bold 16px Arial";
+  ctx.fillText("ბოსი",boss.x+15,boss.y-30);
+ }
+ for(const b of bullets){
+  ctx.fillStyle="#ff503d";ctx.beginPath();
+  ctx.arc(b.x,b.y,b.r,0,Math.PI*2);ctx.fill();
+ }
+ drawDino();
+
+ if(gameOver){
+  ctx.fillStyle="rgba(10,20,35,.72)";ctx.fillRect(0,0,W,H);
+  ctx.fillStyle="#fff";ctx.textAlign="center";
+  ctx.font="bold 40px Arial";ctx.fillText("თამაში დასრულდა!",W/2,H/2-30);
+  ctx.font="22px Arial";
+  ctx.fillText("ქულა: "+Math.floor(score),W/2,H/2+8);
+  ctx.fillText("🏆 რეკორდი: "+record+"   💰 ქოინები: "+totalCoins,W/2,H/2+42);
+  ctx.font="18px Arial";
+  ctx.fillText("SPACE — თავიდან დასაწყებად",W/2,H/2+75);
+  ctx.textAlign="left";
+ }
+}
+function loop(t){
+ if(!lastTime)lastTime=t;
+ const delta=Math.min(50,t-lastTime);lastTime=t;accum+=delta;
+ while(accum>=1000/60){update();accum-=1000/60}
+ draw();requestAnimationFrame(loop);
+}
+
+// საწყისი მონაცემების ჩვენება
+saveData();
+document.getElementById("record").textContent=record;
+hud();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
